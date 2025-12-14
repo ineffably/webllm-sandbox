@@ -1,9 +1,7 @@
-import React from 'react';
-import { Drawer, Slider, InputNumber, Space, Typography, Divider, Tooltip } from 'antd';
+import React, { useState } from 'react';
+import { Drawer, Slider, InputNumber, Space, Typography, Divider, Tooltip, Switch } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { ModelSelector } from '../model/ModelSelector';
-import { ContextEditor } from '../context/ContextEditor';
-import type { ModelKey } from '../../services/LLMService';
 
 const { Text } = Typography;
 
@@ -11,13 +9,11 @@ interface SettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   // Model
-  currentModel: ModelKey | null;
+  currentModel: string | null;
   isModelLoading: boolean;
   loadingProgress: number;
-  onModelChange: (modelKey: ModelKey) => void;
-  // System prompt
-  systemPrompt: string;
-  onSystemPromptChange: (prompt: string) => void;
+  onModelChange: (modelId: string) => void;
+  onCancelLoad?: () => void;
   // Generation params
   temperature: number;
   onTemperatureChange: (value: number) => void;
@@ -34,14 +30,26 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   isModelLoading,
   loadingProgress,
   onModelChange,
-  systemPrompt,
-  onSystemPromptChange,
+  onCancelLoad,
   temperature,
   onTemperatureChange,
   maxTokens,
   onMaxTokensChange,
   disabled = false,
 }) => {
+  const [remoteLogging, setRemoteLogging] = useState(() =>
+    localStorage.getItem('enableRemoteLogging') === 'true'
+  );
+
+  const handleRemoteLoggingChange = (checked: boolean) => {
+    setRemoteLogging(checked);
+    localStorage.setItem('enableRemoteLogging', checked ? 'true' : 'false');
+    // Reload to apply change
+    if (checked) {
+      window.location.reload();
+    }
+  };
+
   return (
     <Drawer
       title="Settings"
@@ -59,6 +67,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
         isLoading={isModelLoading}
         loadingProgress={loadingProgress}
         onModelChange={onModelChange}
+        onCancelLoad={onCancelLoad}
       />
 
       <Divider style={{ margin: '8px 0' }} />
@@ -141,11 +150,22 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
       <Divider style={{ margin: '8px 0' }} />
 
-      <ContextEditor
-        systemPrompt={systemPrompt}
-        onSystemPromptChange={onSystemPromptChange}
-        disabled={disabled}
-      />
+      <div style={{ padding: '0 16px 16px' }}>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+          Developer Options
+        </Text>
+        <Space>
+          <Switch
+            checked={remoteLogging}
+            onChange={handleRemoteLoggingChange}
+            size="small"
+          />
+          <Text>Remote Logging (port 9100)</Text>
+          <Tooltip title="Sends logs to ws://localhost:9100. Run 'npm run logs' to start the log server.">
+            <InfoCircleOutlined style={{ cursor: 'help', color: '#888' }} />
+          </Tooltip>
+        </Space>
+      </div>
     </Drawer>
   );
 };

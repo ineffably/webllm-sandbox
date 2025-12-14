@@ -1,35 +1,57 @@
-import { CreateWebWorkerMLCEngine, type WebWorkerMLCEngine } from '@mlc-ai/web-llm';
+import { CreateWebWorkerMLCEngine, type WebWorkerMLCEngine, prebuiltAppConfig } from '@mlc-ai/web-llm';
 import type { MessageStats, RawExchange } from '../types';
+import { logClient } from './LogClient';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-export const AVAILABLE_MODELS = {
-  'smol-135m': {
-    id: 'SmolLM2-135M-Instruct-q0f16-MLC',
-    name: 'SmolLM2 135M',
-    size: '~360MB',
-  },
-  'smol-360m': {
-    id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
-    name: 'SmolLM2 360M',
-    size: '~376MB',
-  },
-  'qwen-0.5b': {
-    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-    name: 'Qwen2.5 0.5B',
-    size: '~945MB',
-  },
-  'phi-3.5-mini': {
-    id: 'Phi-3.5-mini-instruct-q4f16_1-MLC',
-    name: 'Phi 3.5 Mini',
-    size: '~500MB',
-  },
-} as const;
+// Model info derived from WebLLM's prebuilt config
+export interface ModelInfo {
+  id: string;
+  name: string;
+  sizeMB: number;
+  contextSize?: number;
+}
 
-export type ModelKey = keyof typeof AVAILABLE_MODELS;
+// Build model list from WebLLM's prebuiltAppConfig
+export const AVAILABLE_MODELS: ModelInfo[] = prebuiltAppConfig.model_list
+  .filter(m => {
+    const id = m.model_id.toLowerCase();
+    // Filter to chat/instruct models
+    const isChat = id.includes('instruct') || id.includes('chat') || id.includes('-it-');
+    // Exclude problematic models
+    const isTooSmall = id.includes('-1k');  // Context too small
+    const isVision = id.includes('vision');  // Vision models need special GPU features
+    const isEmbedding = id.includes('embed');  // Embedding models aren't for chat
+    return isChat && !isTooSmall && !isVision && !isEmbedding;
+  })
+  .map(m => ({
+    id: m.model_id,
+    name: m.model_id
+      .replace(/-MLC.*$/, '')
+      .replace(/-q[0-9]f[0-9]+.*$/, '')
+      .replace(/-Instruct/, '')
+      .replace(/-Chat/, '')
+      .replace(/-it/, ''),
+    sizeMB: m.vram_required_MB || 0,
+    contextSize: (m.overrides as { context_window_size?: number })?.context_window_size,
+  }))
+  .sort((a, b) => a.sizeMB - b.sizeMB);
+
+// Helper to find model by ID
+export function getModelById(modelId: string): ModelInfo | undefined {
+  return AVAILABLE_MODELS.find(m => m.id === modelId);
+}
+
+// Get raw model record from WebLLM config (has all metadata)
+export function getRawModelRecord(modelId: string) {
+  return prebuiltAppConfig.model_list.find(m => m.model_id === modelId);
+}
+
+// Default model
+export const DEFAULT_MODEL_ID = 'SmolLM2-135M-Instruct-q0f16-MLC';
 
 export interface ChatResult {
   response: string;
@@ -41,14 +63,14 @@ export class LLMService {
   private engine: WebWorkerMLCEngine | null = null;
   private onProgress: (progress: number) => void;
   private conversationHistory: ChatMessage[] = [];
-  private currentModelKey: ModelKey;
+  private currentModelId: string;
 
   constructor(
     onProgress?: (progress: number) => void,
-    modelKey: ModelKey = 'smol-135m'
+    modelId: string = DEFAULT_MODEL_ID
   ) {
     this.onProgress = onProgress || (() => {});
-    this.currentModelKey = modelKey;
+    this.currentModelId = modelId;
   }
 
   async initialize(): Promise<boolean> {
@@ -58,11 +80,9 @@ export class LLMService {
         { type: 'module' }
       );
 
-      const modelId = AVAILABLE_MODELS[this.currentModelKey].id;
-
       this.engine = await CreateWebWorkerMLCEngine(
         worker,
-        modelId,
+        this.currentModelId,
         {
           initProgressCallback: (progress) => {
             this.onProgress(progress.progress);
@@ -70,7 +90,7 @@ export class LLMService {
         }
       );
 
-      console.log(`LLM initialized: ${modelId}`);
+      console.log(`LLM initialized: ${this.currentModelId}`);
       return true;
     } catch (error) {
       console.error('Failed to initialize LLM:', error);
@@ -78,16 +98,15 @@ export class LLMService {
     }
   }
 
-  async switchModel(modelKey: ModelKey): Promise<void> {
-    if (modelKey === this.currentModelKey && this.engine) {
+  async switchModel(modelId: string): Promise<void> {
+    if (modelId === this.currentModelId && this.engine) {
       return;
     }
 
-    this.currentModelKey = modelKey;
+    this.currentModelId = modelId;
     this.clearHistory();
 
     if (this.engine) {
-      const modelId = AVAILABLE_MODELS[modelKey].id;
       await this.engine.reload(modelId);
     }
   }
@@ -115,6 +134,14 @@ export class LLMService {
       { role: 'system', content: systemPrompt },
       ...this.conversationHistory.slice(-10),
     ];
+
+    // Log the request
+    logClient.debug('llm', 'request', {
+      model: this.currentModelId,
+      messages,
+      temperature,
+      max_tokens: maxTokens,
+    });
 
     try {
       const response = await this.engine.chat.completions.create({
@@ -170,9 +197,17 @@ export class LLMService {
         },
       };
 
+      // Log the full exchange
+      logClient.debug('llm', 'response', {
+        model: this.currentModelId,
+        rawExchange,
+        stats,
+      });
+
       return { response: fullResponse, stats, rawExchange };
     } catch (error) {
       console.error('Chat error:', error);
+      logClient.error('llm', 'chat error', { error: String(error), model: this.currentModelId });
       throw error;
     }
   }
@@ -198,6 +233,14 @@ export class LLMService {
       { role: 'system', content: systemPrompt },
       ...messages,
     ];
+
+    // Log the request
+    logClient.debug('llm', 'request', {
+      model: this.currentModelId,
+      messages: fullMessages,
+      temperature,
+      max_tokens: maxTokens,
+    });
 
     try {
       const response = await this.engine.chat.completions.create({
@@ -248,9 +291,17 @@ export class LLMService {
         },
       };
 
+      // Log the full exchange
+      logClient.debug('llm', 'response', {
+        model: this.currentModelId,
+        rawExchange,
+        stats,
+      });
+
       return { response: fullResponse, stats, rawExchange };
     } catch (error) {
       console.error('Chat error:', error);
+      logClient.error('llm', 'chat error', { error: String(error), model: this.currentModelId });
       throw error;
     }
   }
@@ -259,11 +310,11 @@ export class LLMService {
     this.conversationHistory = [];
   }
 
-  getCurrentModelKey(): ModelKey {
-    return this.currentModelKey;
+  getCurrentModelId(): string {
+    return this.currentModelId;
   }
 
-  getCurrentModelInfo() {
-    return AVAILABLE_MODELS[this.currentModelKey];
+  getCurrentModelInfo(): ModelInfo | undefined {
+    return getModelById(this.currentModelId);
   }
 }

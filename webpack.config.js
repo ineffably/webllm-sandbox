@@ -1,5 +1,7 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = (env, argv) => {
   const isProduction = argv.mode === 'production';
@@ -14,6 +16,13 @@ module.exports = (env, argv) => {
     },
     resolve: {
       extensions: ['.tsx', '.ts', '.js'],
+      fallback: {
+        'buffer': require.resolve('buffer/'),
+        'module': false,
+        'fs': false,
+        'path': false,
+        'crypto': false,
+      },
     },
     module: {
       rules: [
@@ -29,22 +38,45 @@ module.exports = (env, argv) => {
       ],
     },
     plugins: [
+      new webpack.ProvidePlugin({
+        Buffer: ['buffer', 'Buffer'],
+      }),
       new HtmlWebpackPlugin({
         template: './index.html',
         inject: !isProduction, // Only inject in dev mode
       }),
+      new CopyWebpackPlugin({
+        patterns: [
+          { from: 'public', to: '' },
+        ],
+      }),
     ],
     devServer: {
-      static: {
-        directory: path.join(__dirname, 'dist'),
-      },
+      static: [
+        {
+          directory: path.join(__dirname, 'dist'),
+        },
+        {
+          directory: path.join(__dirname, 'public'),
+          publicPath: '/',
+        },
+      ],
       port: 4004,
       hot: true,
       open: false,
-      headers: {
-        'Cross-Origin-Opener-Policy': 'same-origin',
-        'Cross-Origin-Embedder-Policy': 'require-corp',
-      },
+      // Note: COOP/COEP disabled for dev to allow WebSocket logging
+      // WebLLM will use fallback mode without SharedArrayBuffer (slightly slower)
+      // headers: {
+      //   'Cross-Origin-Opener-Policy': 'same-origin',
+      //   'Cross-Origin-Embedder-Policy': 'require-corp',
+      // },
+      proxy: [
+        {
+          context: ['/logs'],
+          target: 'ws://localhost:9100',
+          ws: true,
+        },
+      ],
     },
     experiments: {
       asyncWebAssembly: true,

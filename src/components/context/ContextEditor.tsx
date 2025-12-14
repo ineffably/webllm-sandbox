@@ -19,10 +19,10 @@ export const ContextEditor: React.FC<ContextEditorProps> = ({
   disabled = false,
 }) => {
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ padding: '8px 16px', borderBottom: '1px solid #303030' }}>
       <Collapse
         ghost
-        defaultActiveKey={['system']}
+        size="small"
         items={[
           {
             key: 'system',

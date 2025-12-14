@@ -19,6 +19,7 @@ const __dirname = path.dirname(__filename);
 const PORT = parseInt(process.argv[2] || '9100', 10);
 const LOGS_DIR = path.join(__dirname, '..', 'logs');
 const MAX_LINES_PER_FILE = 2000;
+const MAX_SESSIONS = 25;
 
 interface LogEntry {
   ts: number;
@@ -56,6 +57,28 @@ function ensureDir(dir: string): void {
   }
 }
 
+function cleanupOldSessions(): void {
+  if (!fs.existsSync(LOGS_DIR)) return;
+
+  const entries = fs.readdirSync(LOGS_DIR, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => ({
+      name: e.name,
+      path: path.join(LOGS_DIR, e.name),
+      // Get directory creation time
+      mtime: fs.statSync(path.join(LOGS_DIR, e.name)).mtime.getTime(),
+    }))
+    // Sort by name (chronological since they start with date)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Remove oldest sessions if we exceed the limit
+  while (entries.length > MAX_SESSIONS) {
+    const oldest = entries.shift()!;
+    console.log(`[LogServer] Removing old session: ${oldest.name}`);
+    fs.rmSync(oldest.path, { recursive: true, force: true });
+  }
+}
+
 function getSessionState(sessionId: string): SessionState {
   if (!sessions.has(sessionId)) {
     const dir = path.join(LOGS_DIR, sessionId);
@@ -76,6 +99,9 @@ function getSessionState(sessionId: string): SessionState {
 
     sessions.set(sessionId, state);
     console.log(`[LogServer] New session: ${sessionId}`);
+
+    // Cleanup old sessions after creating a new one
+    cleanupOldSessions();
   }
   return sessions.get(sessionId)!;
 }
@@ -111,6 +137,9 @@ function writeLog(sessionId: string, entry: LogEntry): void {
 
 // Ensure logs directory exists
 ensureDir(LOGS_DIR);
+
+// Cleanup old sessions at startup
+cleanupOldSessions();
 
 // Create WebSocket server
 const wss = new WebSocketServer({ port: PORT });

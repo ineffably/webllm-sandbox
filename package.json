@@ -13,14 +13,20 @@
     "@mlc-ai/web-llm": "^0.2.78",
     "@monaco-editor/react": "^4.7.0",
     "antd": "^5.22.2",
+    "buffer": "^6.0.3",
+    "cheap-glkote": "^0.5.1",
+    "emglken": "^0.7.0",
+    "ifvms": "^1.1.6",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tszm": "^0.9.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/ws": "^8.5.13",
     "concurrently": "^9.1.0",
+    "copy-webpack-plugin": "^13.0.1",
     "css-loader": "^7.1.2",
     "html-webpack-plugin": "^5.6.3",
     "style-loader": "^4.0.0",

@@ -1,4 +1,11 @@
-interface LogEntry {
+/**
+ * Log Client - WebSocket client for streaming logs to the log server
+ *
+ * Fire-and-forget design - logs are sent without waiting for acknowledgment.
+ * Queues messages when disconnected, with a max buffer size.
+ */
+
+export interface LogEntry {
   ts: number;
   lvl: 'debug' | 'info' | 'warn' | 'error';
   sys: string;
@@ -6,83 +13,108 @@ interface LogEntry {
   data?: unknown;
 }
 
-export class LogClient {
+const MAX_QUEUE_SIZE = 1000;
+const RECONNECT_DELAY = 2000;
+
+class LogClient {
   private ws: WebSocket | null = null;
   private sessionId: string;
-  private url: string;
+  private queue: string[] = [];
   private connected = false;
-  private serverAvailable = false;
-  private connectionAttempted = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private url: string;
+  private enabled = false;
 
-  constructor(url = 'ws://localhost:9100') {
-    this.url = url;
-    this.sessionId = this.generateSessionId();
-  }
-
-  private generateSessionId(): string {
+  constructor() {
+    // Generate session ID with date-first format for chronological sorting
+    // Format: YYYYMMDD-HHMMSS-xxxx (e.g., 20251213-143052-a7f2)
     const now = new Date();
-    const date = now.toISOString().split('T')[0];
-    const time = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-    const rand = Math.random().toString(36).substring(2, 6);
-    return `${date}_${time}_${rand}`;
+    const date = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const time = now.toTimeString().slice(0, 8).replace(/:/g, '');
+    const rand = Math.random().toString(36).slice(2, 6);
+    this.sessionId = `${date}-${time}-${rand}`;
+
+    // Use proxied path through webpack dev server
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.url = `${protocol}//${window.location.host}/logs`;
   }
 
   connect(): void {
-    if (this.connectionAttempted) return;
-    this.connectionAttempted = true;
+    // Check if enabled in localStorage
+    this.enabled = localStorage.getItem('enableRemoteLogging') === 'true';
+    if (!this.enabled) return;
+    if (this.ws) return;
+
+    console.log('[LogClient] Connecting to', this.url);
 
     try {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
         this.connected = true;
-        this.serverAvailable = true;
-        console.log(`[LogClient] Connected to ${this.url}`);
-
-        this.ws?.send(JSON.stringify({
-          type: 'init',
-          sessionId: this.sessionId,
-        }));
+        console.log('[LogClient] Connected');
+        this.ws?.send(JSON.stringify({ type: 'init', sessionId: this.sessionId }));
+        this.flushQueue();
       };
 
       this.ws.onclose = () => {
         this.connected = false;
         this.ws = null;
-        // Don't reconnect - just fall back to console
+        if (this.enabled) {
+          this.scheduleReconnect();
+        }
       };
 
       this.ws.onerror = () => {
-        // Server not running - silently fall back to console
-        this.connected = false;
-        this.serverAvailable = false;
-        this.ws = null;
+        // Error will trigger onclose
       };
     } catch {
-      // WebSocket failed - fall back to console
-      this.serverAvailable = false;
+      this.scheduleReconnect();
     }
   }
 
   private send(entry: LogEntry): void {
+    const msg = JSON.stringify({ type: 'log', entry });
+
     if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'log',
-        entry,
-      }));
+      this.ws.send(msg);
+    } else if (this.enabled) {
+      this.queue.push(msg);
+      if (this.queue.length > MAX_QUEUE_SIZE) {
+        this.queue.shift();
+      }
+      if (!this.ws && !this.reconnectTimer) {
+        this.connect();
+      }
     }
+  }
+
+  private flushQueue(): void {
+    while (this.queue.length > 0 && this.connected && this.ws?.readyState === WebSocket.OPEN) {
+      const msg = this.queue.shift();
+      if (msg) this.ws.send(msg);
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, RECONNECT_DELAY);
   }
 
   private toConsole(level: LogEntry['lvl'], system: string, message: string, data?: unknown): void {
     const prefix = `[${system}]`;
-    const consoleMethod = level === 'error' ? console.error
+    const method = level === 'error' ? console.error
       : level === 'warn' ? console.warn
       : level === 'debug' ? console.debug
       : console.log;
 
     if (data !== undefined) {
-      consoleMethod(prefix, message, data);
+      method(prefix, message, data);
     } else {
-      consoleMethod(prefix, message);
+      method(prefix, message);
     }
   }
 
@@ -95,10 +127,7 @@ export class LogClient {
       data,
     };
 
-    // Always send to WebSocket if connected
     this.send(entry);
-
-    // Always log to console as fallback/mirror
     this.toConsole(level, system, message, data);
   }
 
@@ -119,6 +148,11 @@ export class LogClient {
   }
 
   disconnect(): void {
+    this.enabled = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
