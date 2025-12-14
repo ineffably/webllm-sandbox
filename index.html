@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebLLM Sandbox</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #root { height: 100%; }
+  </style>
+  <script>
+    window.addEventListener('load', function() {
+      // Wait a tick to see if HtmlWebpackPlugin injected bundle already loaded
+      setTimeout(function() {
+        if (!window._bundleLoaded) {
+          console.log('Bundle not injected, loading manually for production/GitHub Pages');
+          var script = document.createElement('script');
+          script.src = 'dist/bundle.js';
+          script.async = false;
+          script.onload = function() {
+            console.log('Bundle loaded successfully from dist/bundle.js');
+          };
+          script.onerror = function(e) {
+            console.error('Failed to load bundle from dist/bundle.js', e);
+          };
+          console.log('Appending script tag for dist/bundle.js...');
+          document.body.appendChild(script);
+        }
+      }, 0);
+    });
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>
