@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Layout, Button, Tabs, Tooltip, Select, Space } from 'antd';
-import { SettingOutlined, ExperimentOutlined, MessageOutlined, TeamOutlined, TrophyOutlined, RocketOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { SettingOutlined, ExperimentOutlined, MessageOutlined, TeamOutlined, TrophyOutlined, RocketOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined, GithubOutlined } from '@ant-design/icons';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { InputBar } from './components/chat/InputBar';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
@@ -327,6 +327,16 @@ const App: React.FC = () => {
         <div className="header-left">
           <ExperimentOutlined style={{ marginRight: 8 }} />
           <span>WebLLM Sandbox</span>
+          <Tooltip title="View on GitHub">
+            <a
+              href="https://github.com/ineffably/webllm-sandbox"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#fff', marginLeft: 12, fontSize: 18 }}
+            >
+              <GithubOutlined />
+            </a>
+          </Tooltip>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {(loadingModel || currentModel) && (() => {
