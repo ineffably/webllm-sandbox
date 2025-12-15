@@ -1,6 +1,8 @@
 node_modules
-dist
 logs
 *.log
 .DS_Store
 .claude
+
+# checking in the build for now
+# dist

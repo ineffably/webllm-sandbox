@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Layout, Button, Tabs, Tooltip } from 'antd';
-import { SettingOutlined, ExperimentOutlined, MessageOutlined, TeamOutlined, TrophyOutlined, RocketOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Layout, Button, Tabs, Tooltip, Select, Space } from 'antd';
+import { SettingOutlined, ExperimentOutlined, MessageOutlined, TeamOutlined, TrophyOutlined, RocketOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { InputBar } from './components/chat/InputBar';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
@@ -8,10 +8,10 @@ import { StatsPanel } from './components/stats/StatsPanel';
 import { GroupChat } from './components/groupchat/GroupChat';
 import { ArenaChat } from './components/arena/ArenaChat';
 import { ZorkPlayer } from './components/zork/ZorkPlayer';
-import { LLMService, AVAILABLE_MODELS, DEFAULT_MODEL_ID, getModelById, getRawModelRecord } from './services/LLMService';
+import { LLMService, AVAILABLE_MODELS, DEFAULT_MODEL_ID, getModelById, getRawModelRecord, type LoadProgress } from './services/LLMService';
 import { ContextEditor, DEFAULT_SYSTEM_PROMPT } from './components/context/ContextEditor';
 import { logClient } from './services/LogClient';
-import type { ChatMessage, MessageStats } from './types';
+import type { ChatMessage, ChatSession, MessageStats } from './types';
 
 const { Header, Content } = Layout;
 
@@ -21,6 +21,8 @@ const STORAGE_KEYS = {
   TEMPERATURE: 'webllm-sandbox:temperature',
   MAX_TOKENS: 'webllm-sandbox:max-tokens',
   ACTIVE_TAB: 'webllm-sandbox:active-tab',
+  SESSIONS: 'webllm-sandbox:sessions',
+  CURRENT_SESSION: 'webllm-sandbox:current-session',
 };
 
 function loadStoredModel(): string | null {
@@ -44,13 +46,74 @@ function loadStoredNumber(key: string, defaultVal: number): number {
   return defaultVal;
 }
 
+const ADJECTIVES = [
+  'Cosmic', 'Quantum', 'Spicy', 'Wobbly', 'Mystic', 'Crispy', 'Turbo',
+  'Sneaky', 'Bouncy', 'Grumpy', 'Sleepy', 'Zesty', 'Chunky', 'Sparkly', 'Dizzy',
+  'Funky', 'Jolly', 'Nerdy', 'Sassy', 'Wonky', 'Zippy', 'Goofy', 'Peppy',
+];
+
+const NOUNS = [
+  'Penguin', 'Waffle', 'Narwhal', 'Taco', 'Platypus', 'Noodle', 'Cactus', 
+  'Llama', 'Pretzel', 'Goblin', 'Wizard', 'Potato', 'Toaster',
+  'Nugget', 'Badger', 'Walrus', 'Pancake', 'Donut', 'Yeti', 'Kraken', 'Wombat',
+];
+
+function generateSessionName(): string {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  return `${adj} ${noun}`;
+}
+
+function createNewSession(): ChatSession {
+  const now = Date.now();
+  return {
+    id: `session-${now}`,
+    name: generateSessionName(),
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function loadStoredSessions(): { sessions: ChatSession[]; currentId: string } {
+  try {
+    const storedSessions = localStorage.getItem(STORAGE_KEYS.SESSIONS);
+    const storedCurrentId = localStorage.getItem(STORAGE_KEYS.CURRENT_SESSION);
+
+    if (storedSessions) {
+      let sessions: ChatSession[] = JSON.parse(storedSessions);
+      if (sessions.length > 0) {
+        // Migrate old "New Chat" names to fun names
+        sessions = sessions.map(s =>
+          s.name === 'New Chat' ? { ...s, name: generateSessionName() } : s
+        );
+        const currentId = storedCurrentId && sessions.some(s => s.id === storedCurrentId)
+          ? storedCurrentId
+          : sessions[0].id;
+        return { sessions, currentId };
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load stored sessions:', e);
+  }
+
+  // Create initial session if none exist
+  const initial = createNewSession();
+  return { sessions: [initial], currentId: initial.id };
+}
+
+function getSessionName(session: ChatSession): string {
+  return session.name;
+}
+
 const App: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadStoredSessions().sessions);
+  const [currentSessionId, setCurrentSessionId] = useState<string>(() => loadStoredSessions().currentId);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [loadingModel, setLoadingModel] = useState<string | null>(loadStoredModel);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [autoLoadTriggered, setAutoLoadTriggered] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadingProgress, setLoadingProgress] = useState<LoadProgress>({ progress: 0, text: '' });
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [systemPrompt, setSystemPrompt] = useState(loadStoredSystemPrompt);
@@ -61,6 +124,65 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem(STORAGE_KEYS.ACTIVE_TAB) || 'chat');
 
   const llmServiceRef = useRef<LLMService | null>(null);
+
+  // Derive current session and messages
+  const currentSession = sessions.find(s => s.id === currentSessionId) || sessions[0];
+  const messages = currentSession?.messages || [];
+
+  // Session management functions
+  const updateCurrentSessionMessages = useCallback((newMessages: ChatMessage[]) => {
+    setSessions(prev => prev.map(s =>
+      s.id === currentSessionId
+        ? { ...s, messages: newMessages, updatedAt: Date.now() }
+        : s
+    ));
+  }, [currentSessionId]);
+
+  const handleNewSession = useCallback(() => {
+    const newSession = createNewSession();
+    setSessions(prev => [newSession, ...prev]);
+    setCurrentSessionId(newSession.id);
+    setLastStats(null);
+    llmServiceRef.current?.clearHistory();
+    logClient.info('session', 'New session created');
+  }, []);
+
+  const handleSwitchSession = useCallback((sessionId: string) => {
+    setCurrentSessionId(sessionId);
+    setLastStats(null);
+    llmServiceRef.current?.clearHistory();
+    logClient.info('session', `Switched to session: ${sessionId}`);
+  }, []);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    const isLastSession = sessions.length === 1;
+    const newSession = isLastSession ? createNewSession() : null;
+
+    setSessions(prev => {
+      const filtered = prev.filter(s => s.id !== sessionId);
+      // If deleting last session, add a fresh one
+      if (filtered.length === 0 && newSession) {
+        return [newSession];
+      }
+      return filtered;
+    });
+
+    // Switch to new session or first remaining
+    if (sessionId === currentSessionId) {
+      if (newSession) {
+        setCurrentSessionId(newSession.id);
+      } else {
+        const remaining = sessions.filter(s => s.id !== sessionId);
+        if (remaining.length > 0) {
+          setCurrentSessionId(remaining[0].id);
+        }
+      }
+    }
+
+    setLastStats(null);
+    llmServiceRef.current?.clearHistory();
+    logClient.info('session', `Deleted session: ${sessionId}`);
+  }, [currentSessionId, sessions]);
 
   // Connect to log server on mount
   useEffect(() => {
@@ -99,10 +221,18 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.ACTIVE_TAB, activeTab);
   }, [activeTab]);
 
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
+  }, [sessions]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION, currentSessionId);
+  }, [currentSessionId]);
+
   const handleModelChange = useCallback(async (modelId: string) => {
     setLoadingModel(modelId);
     setIsModelLoading(true);
-    setLoadingProgress(0);
+    setLoadingProgress({ progress: 0, text: 'Starting...' });
     logClient.info('model', `Loading model: ${modelId}`);
 
     try {
@@ -133,7 +263,7 @@ const App: React.FC = () => {
       timestamp: Date.now(),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    updateCurrentSessionMessages([...messages, userMessage]);
     setIsGenerating(true);
     setStreamingContent('');
 
@@ -158,7 +288,7 @@ const App: React.FC = () => {
         rawExchange: result.rawExchange,
       };
 
-      setMessages((prev) => [...prev, assistantMessage]);
+      updateCurrentSessionMessages([...messages, userMessage, assistantMessage]);
       setLastStats(result.stats);
       setStreamingContent('');
 
@@ -172,19 +302,19 @@ const App: React.FC = () => {
     } finally {
       setIsGenerating(false);
     }
-  }, [systemPrompt, temperature, maxTokens, isGenerating]);
+  }, [systemPrompt, temperature, maxTokens, isGenerating, messages, updateCurrentSessionMessages]);
 
   const handleClear = useCallback(() => {
-    setMessages([]);
+    updateCurrentSessionMessages([]);
     setLastStats(null);
     llmServiceRef.current?.clearHistory();
     logClient.info('chat', 'Conversation cleared');
-  }, []);
+  }, [updateCurrentSessionMessages]);
 
   const handleCancelLoad = useCallback(() => {
     setIsModelLoading(false);
     setLoadingModel(null);
-    setLoadingProgress(0);
+    setLoadingProgress({ progress: 0, text: '' });
     llmServiceRef.current = null;
     logClient.info('model', 'Model loading cancelled');
   }, []);
@@ -215,10 +345,21 @@ const App: React.FC = () => {
                 )}
               </div>
             ) : modelId;
+            // Format progress display
+            const progressDisplay = isModelLoading ? (() => {
+              const pct = Math.round(loadingProgress.progress * 100);
+              if (loadingProgress.loadedMB) {
+                const loaded = loadingProgress.loadedMB.toFixed(0);
+                const speed = loadingProgress.speedMBps ? ` ${loadingProgress.speedMBps.toFixed(1)}MB/s` : '';
+                return `[${pct}% ${loaded}MB${speed}] `;
+              }
+              return `[${pct}%] `;
+            })() : '';
+
             return (
               <Tooltip title={tooltipContent} placement="bottomRight">
                 <span style={{ color: isReady ? '#52c41a' : '#faad14', fontSize: 13, cursor: 'help' }}>
-                  {isModelLoading && `[${Math.round(loadingProgress * 100)}%] `}
+                  {progressDisplay}
                   {modelInfo?.name || modelId}
                 </span>
               </Tooltip>
@@ -256,6 +397,39 @@ const App: React.FC = () => {
               label: <span><MessageOutlined /> Chat</span>,
               children: (
                 <div className="chat-container">
+                  <div className="session-bar">
+                    <Space>
+                      <span style={{ color: '#888', fontSize: 12 }}>Session:</span>
+                      <Select
+                        size="small"
+                        value={currentSessionId}
+                        onChange={handleSwitchSession}
+                        style={{ width: 200 }}
+                        options={sessions.map(s => ({
+                          value: s.id,
+                          label: getSessionName(s),
+                        }))}
+                      />
+                      <Tooltip title="New session">
+                        <Button
+                          size="small"
+                          icon={<PlusOutlined />}
+                          onClick={handleNewSession}
+                        />
+                      </Tooltip>
+                      <Tooltip title="Delete session">
+                        <Button
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => handleDeleteSession(currentSessionId)}
+                        />
+                      </Tooltip>
+                    </Space>
+                    <span style={{ color: '#666', fontSize: 12 }}>
+                      {messages.length} message{messages.length !== 1 ? 's' : ''} · {sessions.length} session{sessions.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
                   <ContextEditor
                     systemPrompt={systemPrompt}
                     onSystemPromptChange={setSystemPrompt}
@@ -265,10 +439,7 @@ const App: React.FC = () => {
                     messages={messages}
                     streamingContent={isGenerating ? streamingContent : undefined}
                   />
-                  <StatsPanel
-                    lastStats={lastStats}
-                    totalMessages={messages.length}
-                  />
+                  <StatsPanel lastStats={lastStats} />
                   <InputBar
                     onSend={handleSend}
                     onClear={handleClear}

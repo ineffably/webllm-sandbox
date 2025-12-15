@@ -33,32 +33,9 @@ export interface MessageStats {
 
 export interface ChatSession {
   id: string;
-  modelId: string;
+  name: string;
+  messages: ChatMessage[];
   createdAt: number;
-  contexts: ContextTemplate[];
-  messages: ChatMessage[];
+  updatedAt: number;
 }
 
-export interface ContextTemplate {
-  id: string;
-  name: string;
-  type: 'system' | 'prefix' | 'suffix';
-  content: string;
-  variables?: Record<string, string>;
-}
-
-export interface ModelInfo {
-  key: string;
-  id: string;
-  name: string;
-  size: string;
-}
-
-export interface AppState {
-  currentModel: string | null;
-  isModelLoading: boolean;
-  loadingProgress: number;
-  messages: ChatMessage[];
-  systemPrompt: string;
-  isGenerating: boolean;
-}

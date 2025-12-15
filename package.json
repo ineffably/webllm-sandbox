@@ -4,8 +4,12 @@
   "description": "React-based sandbox for experimenting with browser-based LLMs",
   "scripts": {
     "dev": "webpack serve --mode development",
-    "build": "webpack --mode production",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && webpack --mode production",
     "logs": "npx tsx tools/log-server.ts",
+    "logs:view": "npx tsx tools/log-viewer.ts",
+    "logs:tail": "npx tsx tools/log-viewer.ts --tail",
+    "logs:html": "npx tsx tools/log-viewer.ts --html > logs/viewer.html && echo 'Created logs/viewer.html'",
     "start": "concurrently \"npm run dev\" \"npm run logs\""
   },
   "dependencies": {
@@ -14,11 +18,9 @@
     "@monaco-editor/react": "^4.7.0",
     "antd": "^5.22.2",
     "buffer": "^6.0.3",
-    "cheap-glkote": "^0.5.1",
-    "emglken": "^0.7.0",
-    "ifvms": "^1.1.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "tszm": "^0.9.1"
   },
   "devDependencies": {

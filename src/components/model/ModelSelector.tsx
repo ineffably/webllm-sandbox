@@ -1,14 +1,14 @@
 import React from 'react';
 import { Select, Progress, Space, Typography, Tag, Tooltip, Button } from 'antd';
 import { LoadingOutlined, CheckCircleOutlined, ThunderboltOutlined, CloseOutlined } from '@ant-design/icons';
-import { AVAILABLE_MODELS, getModelById, getRawModelRecord } from '../../services/LLMService';
+import { AVAILABLE_MODELS, getModelById, getRawModelRecord, type LoadProgress } from '../../services/LLMService';
 
 const { Text } = Typography;
 
 interface ModelSelectorProps {
   currentModel: string | null;
   isLoading: boolean;
-  loadingProgress: number;
+  loadingProgress: LoadProgress;
   onModelChange: (modelId: string) => void;
   onCancelLoad?: () => void;
 }
@@ -100,10 +100,23 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               )}
             </div>
             <Progress
-              percent={Math.round(loadingProgress * 100)}
+              percent={Math.round(loadingProgress.progress * 100)}
               size="small"
               status="active"
             />
+            {(loadingProgress.loadedMB || loadingProgress.text) && (
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                {loadingProgress.loadedMB && (
+                  <span>
+                    {loadingProgress.loadedMB.toFixed(1)} MB downloaded
+                    {loadingProgress.speedMBps && ` • ${loadingProgress.speedMBps.toFixed(1)} MB/s`}
+                  </span>
+                )}
+                {!loadingProgress.loadedMB && loadingProgress.text && (
+                  <span>{loadingProgress.text.slice(0, 60)}</span>
+                )}
+              </Text>
+            )}
           </Space>
         </div>
       )}

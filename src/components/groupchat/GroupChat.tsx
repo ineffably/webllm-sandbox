@@ -54,7 +54,7 @@ export const GroupChat: React.FC<GroupChatProps> = ({
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
-  const [topic, setTopic] = useState('Discuss the future of artificial intelligence');
+  const [topic, setTopic] = useState('Bob is going to think of a random fruit or vegetable and keep it secret from Alice. Alice is going to ask questions where the answer is only yes or no to try and guess it.');
   const [showJson, setShowJson] = useState(false);
   const [maxTurns, setMaxTurns] = useState(10);
 

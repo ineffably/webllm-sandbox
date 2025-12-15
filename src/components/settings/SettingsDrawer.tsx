@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { Drawer, Slider, InputNumber, Space, Typography, Divider, Tooltip, Switch } from 'antd';
+import React from 'react';
+import { Drawer, Slider, InputNumber, Space, Typography, Divider, Tooltip } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { ModelSelector } from '../model/ModelSelector';
+import type { LoadProgress } from '../../services/LLMService';
 
 const { Text } = Typography;
 
@@ -11,7 +12,7 @@ interface SettingsDrawerProps {
   // Model
   currentModel: string | null;
   isModelLoading: boolean;
-  loadingProgress: number;
+  loadingProgress: LoadProgress;
   onModelChange: (modelId: string) => void;
   onCancelLoad?: () => void;
   // Generation params
@@ -37,19 +38,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onMaxTokensChange,
   disabled = false,
 }) => {
-  const [remoteLogging, setRemoteLogging] = useState(() =>
-    localStorage.getItem('enableRemoteLogging') === 'true'
-  );
-
-  const handleRemoteLoggingChange = (checked: boolean) => {
-    setRemoteLogging(checked);
-    localStorage.setItem('enableRemoteLogging', checked ? 'true' : 'false');
-    // Reload to apply change
-    if (checked) {
-      window.location.reload();
-    }
-  };
-
   return (
     <Drawer
       title="Settings"
@@ -146,25 +134,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
           Maximum response length
         </Text>
-      </div>
-
-      <Divider style={{ margin: '8px 0' }} />
-
-      <div style={{ padding: '0 16px 16px' }}>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-          Developer Options
-        </Text>
-        <Space>
-          <Switch
-            checked={remoteLogging}
-            onChange={handleRemoteLoggingChange}
-            size="small"
-          />
-          <Text>Remote Logging (port 9100)</Text>
-          <Tooltip title="Sends logs to ws://localhost:9100. Run 'npm run logs' to start the log server.">
-            <InfoCircleOutlined style={{ cursor: 'help', color: '#888' }} />
-          </Tooltip>
-        </Space>
       </div>
     </Drawer>
   );

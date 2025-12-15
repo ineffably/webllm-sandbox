@@ -11,6 +11,8 @@ import {
 } from '@ant-design/icons';
 import { Agent } from '../../services/Agent';
 import { ZorkService } from '../../services/ZorkService';
+import { ZorkMemory } from '../../services/ZorkMemory';
+import { ZorkPolicy } from '../../services/ZorkPolicy';
 import type { LLMService } from '../../services/LLMService';
 
 const { Text, Title } = Typography;
@@ -29,37 +31,45 @@ interface GameLogEntry {
   turn: number;
 }
 
-const ZORK_PLAYER_PROMPT = `You are an explorer trapped in a mysterious realm. Your goal: discover treasures and find the exit in the fewest moves possible.
+const ZORK_PLAYER_PROMPT = `
+You are an adventurer in an unknown area and each place is labeled and described and you have simple commands to 
+move around and interact with the environment and most environment has a set of objects that can be interacted with.
 
-COMMANDS:
-- Travel to another location: N, S, E, W, UP, DOWN (single letter directions)
-- See: LOOK, INVENTORY, EXAMINE [object]
-- Act: TAKE [x], OPEN [x], READ [x], MOVE (object not self) [x]
+RULES:
+1. explore and be curious, if a mailbox is closed, try OPEN MAILBOX
+2. Prioritize: unresolved leads > new objects > untried exits > backtrack.
+3. Never repeat a command that failed or produced no change.
+4. PAY ATTENTION TO YOUR LOCATION ie: (7 West of House)
+5. ALL text you see from the game could be a clue, make a note of it.
 
-BE CURIOUS: anything new like anything the look response points out or is peculiar
-Common Cycle: LOOK, (read description to find clues), LOOK {clue}, repeat and travel.
-New to an area? Say: "LOOK" to get a description of the area
-ANYTHING mentioned in the look description could be a clue. Use known words first.
-GOOD: N, OPEN MAILBOX, EXAMINE HOUSE, TAKE LEAFLET, MOVE RUG
-BAD: LOOK UP, GO WEST, MOVE NORTH (see travel)
+VALID COMMANDS:
+- Movement: N, S, E, W, NE, NW, SE, SW, UP, DOWN
+- Info: LOOK, INVENTORY, EXAMINE [noun]
+- Actions: TAKE [x], DROP [x], OPEN [x], CLOSE [x], READ [x], MOVE [x], PUSH [x], PULL [x]
+- Combinations: PUT [x] IN [y], UNLOCK [x] WITH [y]
 
-STRATEGY:
-- Explore: try all directions (N, S, E, W)
-- EXAMINE and OPEN interesting objects
-- TAKE useful items
+ZORK TIPS:
+- New room? Always LOOK first.
+- be curious, if a mailbox is closed, try OPEN MAILBOX
+- Pay attention to LOOK and other descriptions; all nouns could be a clue.
+- example: "There is a small mailbox here." you could OPEN MAILBOX
+- OPEN container, then EXAMINE, then TAKE.
+- If blocked: try OPEN DOOR, UNLOCK WITH KEY, CLIMB, ENTER.
 
-Output ONE command:`;
+Output a single Zork command, nothing else.`;
 
-const REASONER_PROMPT = `You are a guide helping an explorer. Give ONE brief tip (under 15 words).
+const REASONER_PROMPT = `You are a guide helping a Zork player. Give ONE brief strategy tip (under 20 words).
 
 PRIORITIES:
-1. New area entered? Say: "LOOK" to get a description of the area
-2. BE CURIOUS anything new like anything the look response points out or is peculiar
-3. Stuck in loop? Suggest a different direction (N, S, E, W)
-4. Command failed? Suggest alternative
-5. Doing well? Say "Good."
+- Loop detected? Suggest breaking the pattern with a new direction.
+- Stuck? Suggest: LOOK, INVENTORY, or try an untried exit.
+- Pay attention to room descriptions; all nouns could be a clue.
+- explore and be curious, if a mailbox is closed, try OPEN MAILBOX
+- Unresolved lead (locked door, closed container)? Address it.
+- New objects? Suggest OPEN, EXAMINE or TAKE.
+- Making progress? Say "Good."
 
-Respond with ONLY the tip.`;
+Output just the tip.`;
 
 const ZORK_COMMANDS = {
   movement: ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'UP', 'DOWN', 'ENTER', 'EXIT', 'CLIMB'],
@@ -89,10 +99,8 @@ export const ZorkPlayer: React.FC<ZorkPlayerProps> = ({
   const reasonerRef = useRef<Agent | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const stopRef = useRef(false);
-  const recentCommandsRef = useRef<string[]>([]);
-  const failedCommandsRef = useRef<Set<string>>(new Set());
-  const gameHistoryRef = useRef<Array<{ cmd: string; result: string }>>([]);
-  const lastLocationRef = useRef<string>('');
+  const memoryRef = useRef<ZorkMemory>(new ZorkMemory());
+  const policyRef = useRef<ZorkPolicy>(new ZorkPolicy(memoryRef.current));
 
   // Initialize Zork and Agents
   useEffect(() => {
@@ -164,25 +172,59 @@ export const ZorkPlayer: React.FC<ZorkPlayerProps> = ({
     return response;
   }, [isInitialized, currentTurn, addLogEntry]);
 
-  // Get advice from the reasoner
+  // Compress game history into a summary using LLM
+  const compressGameHistory = useCallback(async (): Promise<void> => {
+    if (!reasonerRef.current || !llmService) return;
+
+    const memory = memoryRef.current;
+    const recentHistory = memory.getRecentHistory(10);
+    const explorationStats = memory.getExplorationStats();
+    const currentSummary = memory.getGameSummary();
+
+    if (!recentHistory && !explorationStats) return;
+
+    const compressionPrompt = `Summarize this Zork game progress in 2-3 sentences. Focus on: where the player has been, what they collected, and what obstacles remain.
+
+${currentSummary ? `Previous summary: ${currentSummary}\n\n` : ''}${explorationStats ? `Stats:\n${explorationStats}\n\n` : ''}${recentHistory ? `Recent actions:\n${recentHistory}` : ''}
+
+Write a brief summary:`;
+
+    reasonerRef.current.clearHistory();
+    reasonerRef.current.receiveMessage(compressionPrompt, 'System');
+
+    try {
+      const result = await reasonerRef.current.speak(
+        { temperature: 0.3, maxTokens: 100 },
+        () => {}
+      );
+
+      const summary = result.content.trim();
+      if (summary && summary.length > 10) {
+        memory.setGameSummary(summary);
+        console.log('[Zork] Updated game summary:', summary);
+      }
+    } catch (error) {
+      console.warn('[Zork] Failed to compress history:', error);
+    }
+  }, [llmService]);
+
+  // Get advice from the reasoner using structured memory
   const getReasoning = useCallback(async (gameOutput: string): Promise<string> => {
     if (!reasonerRef.current || !llmService) return '';
 
-    const recentCmds = recentCommandsRef.current.slice(-5).join(', ') || 'none yet';
-    const history = gameHistoryRef.current.slice(-3)
-      .map(h => `> ${h.cmd}\n${h.result.slice(0, 100)}...`)
-      .join('\n\n');
+    const memory = memoryRef.current;
+    const loop = memory.detectLoops();
 
-    const context = `Recent commands: ${recentCmds}
-
-${history ? `History:\n${history}\n\n` : ''}Current output:
-${gameOutput.slice(0, 300)}`;
+    // Compact context for reasoner
+    const context = `${memory.toPromptFormat()}
+${loop.isLooping ? `LOOP: ${loop.pattern}` : ''}
+Output: ${gameOutput.slice(0, 200).replace(/\n+/g, ' ')}`;
 
     reasonerRef.current.clearHistory();
     reasonerRef.current.receiveMessage(context, 'Game');
 
     const result = await reasonerRef.current.speak(
-      { temperature: 0.2, maxTokens: 30 },
+      { temperature: 0.2, maxTokens: 20 },
       () => {} // No streaming for reasoner
     );
 
@@ -194,64 +236,90 @@ ${gameOutput.slice(0, 300)}`;
       throw new Error('LLM not available');
     }
 
-    // Check if last command failed
-    const failurePatterns = /don't know|can't|cannot|won't|isn't|aren't|impossible|securely|already|nothing|no verb/i;
-    const lastCmd = recentCommandsRef.current[recentCommandsRef.current.length - 1];
-    if (lastCmd && failurePatterns.test(gameOutput)) {
-      failedCommandsRef.current.add(lastCmd);
-      console.log('[Zork] Marked as failed:', lastCmd);
-    }
+    const memory = memoryRef.current;
+    const policy = policyRef.current;
 
-    // Track game history
-    if (lastCmd) {
-      gameHistoryRef.current.push({ cmd: lastCmd, result: gameOutput });
-      if (gameHistoryRef.current.length > 10) {
-        gameHistoryRef.current.shift();
+    // Get previous state before updating
+    const prevState = memory.getState();
+
+    // Extract state from game output
+    const state = memory.extractState(gameOutput);
+    console.log('[Zork] State:', state.currentRoom, '| Exits:', state.exits.join(','), '| Objects:', state.visibleObjects.join(','));
+
+    // Update memory with the last command result (if we have a previous state)
+    const lastCommands = memory['shortTerm'].lastCommands;
+    const lastCmd = lastCommands.length > 0 ? lastCommands[lastCommands.length - 1]?.command : null;
+
+    // Check for loop patterns
+    const loop = memory.detectLoops();
+    if (loop.isLooping) {
+      console.log('[Zork] Loop detected:', loop.pattern, '-', loop.suggestion);
+      // Forbid commands involved in the loop
+      if (loop.pattern === 'repeat' && lastCmd) {
+        memory.forbidCommand(lastCmd, 10);
+      }
+      if (loop.pattern === 'alternation') {
+        const recent = lastCommands.slice(-4);
+        if (recent.length >= 2) {
+          memory.forbidCommand(recent[recent.length - 1].command, 6);
+          memory.forbidCommand(recent[recent.length - 2].command, 6);
+        }
       }
     }
 
-    // Detect new location (first line of output is usually location name)
-    const firstLine = gameOutput.trim().split('\n')[0];
-    const isNewLocation = firstLine !== lastLocationRef.current &&
-                          !firstLine.includes('>') &&
-                          !failurePatterns.test(firstLine) &&
-                          firstLine.length < 50;
+    // Detect new location
+    const isNewLocation = prevState && state.currentRoom !== prevState.currentRoom;
     if (isNewLocation) {
-      lastLocationRef.current = firstLine;
-      console.log('[Zork] New location:', firstLine);
+      console.log('[Zork] New location:', state.currentRoom);
     }
 
-    // Get advice from reasoner (only if we have some history)
+    // Compress game history every 5 turns to maintain context
+    if (memory.needsSummaryRefresh(5)) {
+      console.log('[Zork] Compressing game history...');
+      await compressGameHistory();
+    }
+
+    // Get top candidates with reasoning
+    const candidates = policy.getTopCandidates(5);
+    const candidateList = candidates.map(c => `- ${c.command} (${c.reason})`).join('\n');
+
+    console.log('[Zork] Top candidates:', candidates.slice(0, 3).map(c => c.command).join(', '));
+
+    // Get advice from reasoner (but not every turn)
     let advice = '';
-    if (isNewLocation && lastCmd !== 'LOOK') {
-      // Strong suggestion to LOOK in new areas
-      advice = 'New area! Use LOOK to see what is here.';
-      console.log('[Zork] Auto-advice:', advice);
-    } else if (recentCommandsRef.current.length > 0) {
+    if (isNewLocation) {
+      advice = 'New area - use LOOK to explore.';
+    } else if (loop.isLooping) {
+      advice = loop.suggestion;
+    } else if (lastCommands.length > 2 && lastCommands.length % 3 === 0) {
+      // Get reasoner advice every 3 turns
       advice = await getReasoning(gameOutput);
-      if (advice && advice.toLowerCase() !== 'good.') {
+      if (advice && !advice.toLowerCase().includes('good')) {
         console.log('[Zork] Reasoner advice:', advice);
       }
     }
 
-    // Build context with advice and failed commands
-    const failedInfo = failedCommandsRef.current.size > 0
-      ? `\nFailed commands: ${[...failedCommandsRef.current].slice(-5).join(', ')}`
-      : '';
+    // Build structured prompt for the actor
+    const gameSummary = memory.getGameSummary();
+    const promptContext = `${gameSummary ? `PROGRESS SO FAR:\n${gameSummary}\n\n` : ''}${memory.toPromptFormat()}
 
-    const adviceInfo = advice && advice.toLowerCase() !== 'good.'
-      ? `\n[Guide]: ${advice}`
-      : '';
+GAME OUTPUT:
+${gameOutput.slice(0, 500)}
 
-    agentRef.current.receiveMessage(
-      `Game:\n${gameOutput}${failedInfo}${adviceInfo}\n\nYour command:`,
-      'Game'
-    );
+SUGGESTED ACTIONS:
+${candidateList}
+${advice ? `\n[GUIDE]: ${advice}` : ''}
+
+Choose the best command:`;
+
+    // Clear history each turn - we use structured memory instead of conversation history
+    agentRef.current.clearHistory();
+    agentRef.current.receiveMessage(promptContext, 'Game');
 
     setStreamingContent('');
 
     const result = await agentRef.current.speak(
-      { temperature: 0.3, maxTokens: 20 },  // Slightly higher temp for variety
+      { temperature: 0.2, maxTokens: 20 },  // Lower temp for more deterministic choices
       (chunk) => {
         if (!stopRef.current) {
           setStreamingContent(prev => prev + chunk);
@@ -266,50 +334,30 @@ ${gameOutput.slice(0, 300)}`;
     command = command
       .replace(/^["'>:\-\.\s]+/, '')
       .replace(/["'<\.\s]+$/, '')
-      .replace(/^(I |YOU |THE |MY |LETS? |OKAY |OK |SURE |NOW )/i, '')
+      .replace(/^(I |YOU |THE |MY |LETS? |OKAY |OK |SURE |NOW |COMMAND:?\s*)/i, '')
       .trim();
 
-    // Block known bad patterns
-    const badPatterns = /^(LOOK\s+(UP|DOWN|NORTH|SOUTH|EAST|WEST|N|S|E|W)|GO\s|WEST OF|NORTH OF|SOUTH OF|EAST OF)/i;
-    if (badPatterns.test(command)) {
-      console.warn('[Zork] Bad pattern detected:', command);
-      command = 'OPEN MAILBOX';  // Default to something useful at start
+    // Validate command through policy
+    const validation = policy.validateCommand(command);
+    if (!validation.valid) {
+      console.warn('[Zork] Policy rejected:', command, '->', validation.adjusted, '|', validation.reason);
+      command = validation.adjusted;
     }
 
-    // Validate command format
-    if (command.length > 30 || command.split(' ').length > 5 || !/^[A-Z\s]+$/.test(command)) {
-      console.warn('[Zork] Invalid command, trying fallback:', command);
-      command = 'LOOK';
+    // Additional format validation
+    if (command.length > 40 || command.split(' ').length > 6 || !/^[A-Z\s]+$/.test(command)) {
+      console.warn('[Zork] Invalid format, using policy suggestion:', command);
+      const best = policy.getBestAction();
+      command = best?.command || 'LOOK';
     }
 
-    // Check if we're repeating the last command
-    if (command === lastCmd) {
-      console.warn('[Zork] Repeated command detected:', command);
-      const fallbacks = ['N', 'S', 'E', 'W', 'OPEN MAILBOX', 'EXAMINE MAILBOX', 'INVENTORY', 'LOOK'];
-      const unused = fallbacks.find(f => f !== lastCmd && !failedCommandsRef.current.has(f));
-      if (unused) {
-        command = unused;
-      }
-    }
+    // Update memory with the command we're about to send
+    // (result tracking happens on next turn when we see the output)
+    memory.updateAfterCommand(command, gameOutput, prevState);
 
-    // If command was recently failed, try alternatives
-    if (failedCommandsRef.current.has(command)) {
-      const fallbacks = ['N', 'S', 'E', 'W', 'OPEN MAILBOX', 'EXAMINE MAILBOX', 'INVENTORY', 'LOOK'];
-      const unused = fallbacks.find(f => !failedCommandsRef.current.has(f) && !recentCommandsRef.current.includes(f));
-      if (unused) {
-        console.log('[Zork] Avoiding failed command, using:', unused);
-        command = unused;
-      }
-    }
-
-    // Track recent commands
-    recentCommandsRef.current.push(command);
-    if (recentCommandsRef.current.length > 10) {
-      recentCommandsRef.current.shift();
-    }
-
+    console.log('[Zork] Final command:', command);
     return command;
-  }, [llmService]);
+  }, [llmService, getReasoning, compressGameHistory]);
 
   const playTurn = useCallback(async () => {
     if (!isInitialized || stopRef.current) return false;
@@ -382,11 +430,9 @@ ${gameOutput.slice(0, 300)}`;
     setIsInitialized(false);
     setStreamingContent('');
 
-    // Clear command tracking
-    recentCommandsRef.current = [];
-    failedCommandsRef.current.clear();
-    gameHistoryRef.current = [];
-    lastLocationRef.current = '';
+    // Reset memory and policy
+    memoryRef.current.reset();
+    policyRef.current = new ZorkPolicy(memoryRef.current);
 
     if (zorkRef.current) {
       zorkRef.current.reset();

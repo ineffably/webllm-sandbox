@@ -2,7 +2,8 @@ import { CreateWebWorkerMLCEngine, type WebWorkerMLCEngine, prebuiltAppConfig } 
 import type { MessageStats, RawExchange } from '../types';
 import { logClient } from './LogClient';
 
-interface ChatMessage {
+/** Internal message format for LLM API calls (simpler than UI ChatMessage) */
+interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
@@ -59,14 +60,22 @@ export interface ChatResult {
   rawExchange: RawExchange;
 }
 
+export interface LoadProgress {
+  progress: number;      // 0-1
+  text: string;          // Status text from WebLLM
+  loadedMB?: number;     // Parsed MB loaded
+  totalMB?: number;      // Estimated total MB
+  speedMBps?: number;    // Download speed MB/s
+}
+
 export class LLMService {
   private engine: WebWorkerMLCEngine | null = null;
-  private onProgress: (progress: number) => void;
-  private conversationHistory: ChatMessage[] = [];
+  private onProgress: (progress: LoadProgress) => void;
+  private conversationHistory: LLMMessage[] = [];
   private currentModelId: string;
 
   constructor(
-    onProgress?: (progress: number) => void,
+    onProgress?: (progress: LoadProgress) => void,
     modelId: string = DEFAULT_MODEL_ID
   ) {
     this.onProgress = onProgress || (() => {});
@@ -84,8 +93,36 @@ export class LLMService {
         worker,
         this.currentModelId,
         {
-          initProgressCallback: (progress) => {
-            this.onProgress(progress.progress);
+          initProgressCallback: (report) => {
+            // Parse progress text for download info
+            // Format: "Fetching param cache[0/4]: 50.5MB loaded. 25% completed, 2.50 MB/s"
+            const text = report.text || '';
+            let loadedMB: number | undefined;
+            let speedMBps: number | undefined;
+
+            // Extract loaded MB
+            const loadedMatch = text.match(/([\d.]+)\s*MB loaded/i);
+            if (loadedMatch) {
+              loadedMB = parseFloat(loadedMatch[1]);
+            }
+
+            // Extract speed
+            const speedMatch = text.match(/([\d.]+)\s*MB\/s/i);
+            if (speedMatch) {
+              speedMBps = parseFloat(speedMatch[1]);
+            }
+
+            // Get model's expected size from config
+            const modelRecord = getRawModelRecord(this.currentModelId);
+            const totalMB = modelRecord?.vram_required_MB;
+
+            this.onProgress({
+              progress: report.progress,
+              text,
+              loadedMB,
+              totalMB,
+              speedMBps,
+            });
           },
         }
       );
@@ -130,7 +167,7 @@ export class LLMService {
       content: userMessage,
     });
 
-    const messages: ChatMessage[] = [
+    const messages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
       ...this.conversationHistory.slice(-10),
     ];
@@ -229,7 +266,7 @@ export class LLMService {
     const maxTokens = options.maxTokens ?? 2048;
     const startTime = performance.now();
 
-    const fullMessages: ChatMessage[] = [
+    const fullMessages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
       ...messages,
     ];
