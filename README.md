@@ -2,7 +2,7 @@
 
 I have been messing around with browser based LLMs for a few different reasons and I thought I'd go ahead and create a quick sandbox that I could use to entertain different scenarios. These LLMs run client side and so the prompts are processed locally, no prompts go over the wire. Since this is all client-side and the browser hosted LLMs only work if you have supported hardware (WebGPU).
 
-You can try this out now HERE hosted on github pages.
+You can try this out now [HERE](https://ineffably.github.io/webllm-sandbox/) hosted on github pages.
 
 A React-based sandbox for experimenting with browser-based LLMs using [WebLLM](https://github.com/mlc-ai/web-llm). Run language models directly in your browser with no server required.
 
